@@ -168,7 +168,6 @@
                     </div>
 
                     <div id="prayerGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
-                    <div class="mt-4 text-center text-xs text-slate-500 dark:text-slate-400">ID: <span id="userIdDisplay"></span></div>
                 </div>
             </div>
         </div>
@@ -212,11 +211,7 @@
         </div>
     </div>
 
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection, addDoc, getDocs, serverTimestamp, query as firestoreQuery, orderBy, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
+    <script>
         // --- DOM Elements ---
         const elements = {
             loadingSpinner: document.getElementById('loading-spinner'),
@@ -231,7 +226,6 @@
             historyButton: document.getElementById('historyButton'),
             prayerGrid: document.getElementById('prayerGrid'),
             errorMessage: document.getElementById('error-message'),
-            userIdDisplay: document.getElementById('userIdDisplay'),
             progressRing: document.getElementById('progress-ring'),
             progressText: document.getElementById('progress-text'),
             dailyGoalInput: document.getElementById('dailyGoalInput'),
@@ -253,24 +247,24 @@
         const SUN_SVG = `<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" /></svg>`;
         const MOON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" /></svg>`;
         
-        let db, auth, userId, mainDocRef, historyCollectionRef, fullData = null;
+        // --- Local State ---
+        let fullData = null;
         let confirmCallback = null;
         const radius = elements.progressRing.r.baseVal.value;
         const circumference = 2 * Math.PI * radius;
         elements.progressRing.style.strokeDasharray = `${circumference} ${circumference}`;
         elements.progressRing.style.strokeDashoffset = circumference;
+        
+        // --- Local Storage Data Management ---
+        const DATA_KEY = 'kazaNamazıData';
 
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'kaza-namazi-default';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-        try {
-            const app = initializeApp(firebaseConfig);
-            db = getFirestore(app);
-            auth = getAuth(app);
-        } catch (error) {
-            console.error("Firebase init failed:", error);
-            showError("Uygulama başlatılamadı.");
-            elements.loadingSpinner.classList.add('hidden');
+        function loadData() {
+            const savedData = localStorage.getItem(DATA_KEY);
+            return savedData ? JSON.parse(savedData) : null;
+        }
+
+        function saveData(data) {
+            localStorage.setItem(DATA_KEY, JSON.stringify(data));
         }
 
         // --- Theme Management ---
@@ -289,45 +283,7 @@
             applyTheme(newTheme);
         });
         
-        // --- Auth & Data Loading ---
-        onAuthStateChanged(auth, async (user) => {
-            if (user) {
-                userId = user.uid;
-                elements.userIdDisplay.textContent = userId;
-                mainDocRef = doc(db, "artifacts", appId, "users", userId, "prayers", "data");
-                historyCollectionRef = collection(db, "artifacts", appId, "users", userId, "prayers_history");
-                
-                onSnapshot(mainDocRef, (docSnap) => {
-                    elements.loadingSpinner.classList.add('hidden');
-                    if (docSnap.exists()) {
-                        fullData = docSnap.data();
-                        showTrackerView(fullData);
-                    } else {
-                        fullData = null;
-                        showSetupView();
-                    }
-                }, (error) => {
-                    console.error("onSnapshot error:", error);
-                    showError("Veri alınırken bir hata oluştu.");
-                    elements.loadingSpinner.classList.add('hidden');
-                });
-
-                fetchPrayerTimes();
-                setInterval(checkKerahat, 60000);
-                loadDailyGoal();
-
-            } else {
-                try {
-                    if (initialAuthToken) { await signInWithCustomToken(auth, initialAuthToken); } 
-                    else { await signInAnonymously(auth); }
-                } catch (error) {
-                    console.error("Auth failed:", error);
-                    elements.loadingSpinner.classList.add('hidden');
-                    showError("Kimlik doğrulama başarısız.");
-                }
-            }
-        });
-        
+        // --- UI Logic ---
         function showSetupView() {
             elements.trackerView.classList.add('hidden');
             elements.setupView.classList.remove('hidden');
@@ -372,21 +328,25 @@
         }
         
         let dailyGoal = { count: 0, date: '' };
-        async function loadDailyGoal() {
+        function loadDailyGoal() {
             const todayStr = new Date().toLocaleDateString('tr-TR');
             const savedGoal = JSON.parse(localStorage.getItem('dailyGoal'));
             dailyGoal = (savedGoal && savedGoal.date === todayStr) ? savedGoal : { count: 0, date: todayStr };
             localStorage.setItem('dailyGoal', JSON.stringify(dailyGoal));
             elements.dailyGoalInput.value = dailyGoal.count > 0 ? dailyGoal.count : '';
-            await updateDailyGoalProgress();
+            updateDailyGoalProgress();
         }
 
-        async function updateDailyGoalProgress() {
-            const startOfToday = new Date();
-            startOfToday.setHours(0, 0, 0, 0);
-            const q = firestoreQuery(historyCollectionRef, where("timestamp", ">=", startOfToday));
-            const querySnapshot = await getDocs(q);
-            const dailyProgress = querySnapshot.size;
+        function updateDailyGoalProgress() {
+            if (!fullData || !fullData.history) {
+                elements.dailyProgressText.textContent = `0 / ${dailyGoal.count || '?'}`;
+                return;
+            }
+            const todayStr = new Date().toLocaleDateString('tr-TR');
+            const dailyProgress = fullData.history.filter(item => {
+                return new Date(item.timestamp).toLocaleDateString('tr-TR') === todayStr;
+            }).length;
+
             elements.dailyProgressText.textContent = `${dailyProgress} / ${dailyGoal.count || '?'}`;
             if(dailyGoal.count > 0 && dailyProgress >= dailyGoal.count) showCelebration();
         }
@@ -414,7 +374,7 @@
         }
         
         // --- Event Handlers ---
-        elements.calculateButton.addEventListener('click', async () => {
+        elements.calculateButton.addEventListener('click', () => {
             const startDate = new Date(elements.startDateInput.value);
             const endDate = new Date(elements.endDateInput.value);
             if (!elements.startDateInput.value || !elements.endDateInput.value || startDate > endDate) {
@@ -422,56 +382,52 @@
             }
             const diffDays = Math.ceil(Math.abs(endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
             const prayerData = Object.fromEntries(Object.keys(PRAYER_TIMES).map(key => [key, diffDays]));
-            elements.loadingSpinner.classList.remove('hidden');
-            try {
-                await setDoc(mainDocRef, { initial: prayerData, current: { ...prayerData } });
-            } catch (error) { showError("Veri kaydedilemedi."); elements.loadingSpinner.classList.add('hidden');}
+            
+            fullData = { 
+                initial: { ...prayerData }, 
+                current: { ...prayerData },
+                history: []
+            };
+            saveData(fullData);
+            showTrackerView(fullData);
         });
 
         elements.resetButton.addEventListener('click', () => {
-            showConfirm("Emin misiniz?", "Tüm verileriniz silinecek ve bu işlem geri alınamaz.", async () => {
-                elements.loadingSpinner.classList.remove('hidden');
-                try {
-                    await deleteDoc(mainDocRef);
-                    const historySnapshot = await getDocs(historyCollectionRef);
-                    for (const doc of historySnapshot.docs) await deleteDoc(doc.ref);
-                    localStorage.removeItem('dailyGoal');
-                    localStorage.removeItem('lastCelebration');
-                } catch (error) { 
-                    showError("Veri silinemedi."); 
-                } finally {
-                    elements.loadingSpinner.classList.add('hidden');
-                }
+            showConfirm("Emin misiniz?", "Tüm verileriniz silinecek ve bu işlem geri alınamaz.", () => {
+                localStorage.removeItem(DATA_KEY);
+                localStorage.removeItem('dailyGoal');
+                localStorage.removeItem('lastCelebration');
+                fullData = null;
+                showSetupView();
             });
         });
 
-        elements.prayerGrid.addEventListener('click', async (e) => {
+        elements.prayerGrid.addEventListener('click', (e) => {
             const button = e.target.closest('button[data-prayer]');
             if (!button || !fullData) return;
             const prayer = button.dataset.prayer;
             const change = parseInt(button.dataset.change, 10);
-            const newData = JSON.parse(JSON.stringify(fullData));
-            const currentCount = newData.current[prayer] || 0;
+            
+            const currentCount = fullData.current[prayer] || 0;
             if (change === -1 && currentCount > 0) {
-                 newData.current[prayer]--;
-                 await addDoc(historyCollectionRef, { prayer, timestamp: serverTimestamp() });
+                 fullData.current[prayer]--;
+                 fullData.history.unshift({ prayer, timestamp: new Date().toISOString() });
                  updateDailyGoalProgress();
             } else if (change === 1) { 
-                 newData.current[prayer]++;
+                 fullData.current[prayer]++;
+                 // Optional: Remove the last entry from history for a true "undo"
             } else { return; }
-
-            try { 
-                await setDoc(mainDocRef, newData, {merge: true}); 
-                const countEl = document.getElementById(`count-${prayer}`);
-                if(countEl) {
-                    countEl.classList.add('number-update');
-                    countEl.onanimationend = () => countEl.classList.remove('number-update');
-                }
-            } catch (error) { 
-                showError("Sayı güncellenemedi."); 
-                // Revert UI on error
-                document.getElementById(`count-${prayer}`).textContent = fullData.current[prayer];
+            
+            saveData(fullData);
+            const countEl = document.getElementById(`count-${prayer}`);
+            if(countEl) {
+                countEl.textContent = fullData.current[prayer];
+                countEl.classList.add('number-update');
+                countEl.onanimationend = () => countEl.classList.remove('number-update');
             }
+             updateOverallProgress(fullData.initial, fullData.current);
+             document.querySelector(`button[data-prayer="${prayer}"][data-change="-1"]`).disabled = fullData.current[prayer] === 0;
+
         });
         
         elements.setDailyGoalButton.addEventListener('click', () => {
@@ -516,20 +472,19 @@
             confirmCallback = null;
         });
 
-        elements.historyButton.addEventListener('click', async () => {
-            elements.historyContent.innerHTML = '<p>Yükleniyor...</p>';
+        elements.historyButton.addEventListener('click', () => {
+            if (!fullData || !fullData.history || fullData.history.length === 0) {
+                 elements.historyContent.innerHTML = '<p>Henüz kılınmış namaz kaydı yok.</p>';
+            } else {
+                elements.historyContent.innerHTML = fullData.history.map(item => {
+                    const date = new Date(item.timestamp);
+                    return `<div class="p-2 rounded-md bg-slate-200/50 dark:bg-slate-700/50 flex justify-between items-center">
+                                <span class="font-semibold">${PRAYER_TIMES[item.prayer]}</span>
+                                <span class="text-sm text-slate-500">${date.toLocaleString('tr-TR')}</span>
+                            </div>`;
+                }).join('');
+            }
             toggleModal('historyModal', true);
-            const q = firestoreQuery(historyCollectionRef, orderBy("timestamp", "desc"));
-            const querySnapshot = await getDocs(q);
-            if(querySnapshot.empty) return elements.historyContent.innerHTML = '<p>Kayıt yok.</p>';
-            elements.historyContent.innerHTML = querySnapshot.docs.map(doc => {
-                const data = doc.data();
-                const date = data.timestamp.toDate();
-                return `<div class="p-2 rounded-md bg-slate-200/50 dark:bg-slate-700/50 flex justify-between items-center">
-                            <span class="font-semibold">${PRAYER_TIMES[data.prayer]}</span>
-                            <span class="text-sm text-slate-500">${date.toLocaleString('tr-TR')}</span>
-                        </div>`;
-            }).join('');
         });
 
         elements.closeHistoryModal.addEventListener('click', () => toggleModal('historyModal', false));
@@ -549,7 +504,22 @@
             setTimeout(() => elements.errorMessage.classList.add('hidden'), 3000);
         }
 
-        applyTheme(localStorage.getItem('theme') || 'dark');
+        // --- Initial Application Load ---
+        function main() {
+            elements.loadingSpinner.classList.add('hidden');
+            applyTheme(localStorage.getItem('theme') || 'dark');
+            fullData = loadData();
+            if (fullData) {
+                showTrackerView(fullData);
+            } else {
+                showSetupView();
+            }
+            fetchPrayerTimes();
+            setInterval(checkKerahat, 60000);
+            loadDailyGoal();
+        }
+
+        main();
     </script>
 </body>
 </html>
